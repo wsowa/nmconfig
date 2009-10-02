@@ -18,6 +18,7 @@ ADD_DEFINITIONS( -Wall -Werror -std=gnu89 -g -O2 -Wshadow
 set (NMCONFIG_SRC
 	main.c
 	NMConfig.c
+	NMConfigDevicePrintHelper.c
 )
 
 ADD_EXECUTABLE (nmconfig ${NMCONFIG_SRC})
