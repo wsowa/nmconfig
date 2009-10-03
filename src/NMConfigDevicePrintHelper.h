@@ -25,5 +25,6 @@
 #include <nm-device.h>
 
 void nm_config_device_show_generic_info (NMDevice * device);
+void nm_config_device_show_full_info (NMDevice * device);
 
 #endif /* NM_CONFIG_DEVICE_PRINT_HELPER_H */

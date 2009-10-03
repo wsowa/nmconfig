@@ -148,7 +148,7 @@ list_devices (NMConfig * self)
 
     for (i = 0; i < devices->len; i++) {
     	NMDevice * device = NM_DEVICE (g_ptr_array_index (devices, i));
-    	nm_config_device_show_generic_info (device);
+    	nm_config_device_show_full_info (device);
     }
 }
 
@@ -180,7 +180,7 @@ parse_command_line (gpointer user_data)
 			g_signal_emit(self, signals[FINISHED], 0, 1);
 			goto out;
 		}
-		nm_config_device_show_generic_info (device);
+		nm_config_device_show_full_info (device);
 	}
 
 
