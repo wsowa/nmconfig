@@ -23,11 +23,15 @@
 #include <glib.h>
 #include <glib-object.h>
 #include <NetworkManager.h>
+#include <nm-remote-settings.h>
+#include <nm-remote-settings-system.h>
+#include <nm-settings-interface.h>
 #include <nm-client.h>
 #include <nm-device.h>
 
 #include "NMConfig.h"
 #include "NMConfigDevicePrintHelper.h"
+#include "NMConfigConnectionPrintHelper.h"
 
 G_DEFINE_TYPE (NMConfig, nm_config, G_TYPE_OBJECT)
 
@@ -38,8 +42,12 @@ typedef struct {
 
 	NMClient * client;
 	GPtrArray * devices; /* array with NMDevice objects */
-//	NMRemoteSettings * system_settings;
-//	NMRemoteSettings * user_settings;
+
+	DBusGConnection * bus;
+	NMRemoteSettingsSystem * system_settings;
+	NMRemoteSettings * user_settings;
+	GSList * system_connections;
+	GSList * user_connections;
 
 	guint parse_id;
 } NMConfigPrivate;
@@ -153,9 +161,35 @@ list_devices (NMConfig * self)
 }
 
 static void
+connection_show_cb (gpointer object, gpointer user_data)
+{
+	nm_config_connection_show (NM_SETTINGS_CONNECTION_INTERFACE (object));
+}
+
+static void
 list_connections (NMConfig * self)
 {
+	NMConfigPrivate *priv = NM_CONFIG_GET_PRIVATE (self);
 
+	if (priv->system_connections) {
+		g_print("System scope connections:\n");
+		g_slist_foreach (priv->system_connections,
+				connection_show_cb, NULL);
+	}
+	else
+		g_print ("No system scope connections\n");
+	g_print("\n");
+
+	if (priv->user_connections) {
+		g_print("User scope connections:\n");
+		g_slist_foreach (priv->user_connections,
+				connection_show_cb, NULL);
+	}
+	else if (priv->user_settings)
+		g_print ("No user scope connections\n");
+	else
+		g_print ("User scope settings service is unavailable\n");
+	g_print("\n");
 }
 
 static gboolean
@@ -193,6 +227,24 @@ out:
 	return FALSE;
 }
 
+static void
+connections_read_cb (NMSettingsInterface * settings, gpointer user_data) {
+	NMConfig *self = NM_CONFIG (user_data);
+	NMConfigPrivate *priv = NM_CONFIG_GET_PRIVATE (self);
+
+	if (NM_IS_REMOTE_SETTINGS_SYSTEM (settings))
+		priv->system_connections =
+			nm_settings_interface_list_connections (settings);
+
+	if (NM_IS_REMOTE_SETTINGS (settings))
+		priv->user_connections =
+			nm_settings_interface_list_connections (settings);
+
+	/* start parsing command line if all connections are read */
+	if ((!priv->system_settings || priv->system_connections) &&
+		(!priv->user_settings || priv->user_connections))
+		priv->parse_id = g_idle_add (parse_command_line, self);
+}
 
 NMConfig *
 nm_config_new (guint argc, gchar *argv[])
@@ -225,6 +277,10 @@ nm_config_init (NMConfig *self)
     NMConfigPrivate *priv = NM_CONFIG_GET_PRIVATE (self);
 
     priv->devices = NULL;
+    priv->system_settings = NULL;
+    priv->user_settings = NULL;
+    priv->system_connections = NULL;
+    priv->user_connections = NULL;
 }
 
 static GObject *
@@ -235,7 +291,8 @@ constructor (GType type,
 	GObject *object;
 	NMConfigPrivate *priv;
 
-	gboolean is_nm_running;
+	gboolean is_nm_running, is_user_service_running;
+	GError * err = NULL;
 
 	object = G_OBJECT_CLASS (nm_config_parent_class)->constructor (type, n_construct_params, construct_params);
 	if (!object)
@@ -249,8 +306,48 @@ constructor (GType type,
 	if (!is_nm_running) {
 		g_printerr("NetworkManager is not running\n");
 		g_signal_emit(object, signals[FINISHED], 0, 1);
+
+		return object;
 	}
-	else
+
+	priv->bus = dbus_g_bus_get (DBUS_BUS_SYSTEM, &err);
+	if (! priv->bus) {
+		g_warning ("Could not get the system bus.  Make sure "
+				   "the message bus daemon is running!  Message: %s",
+				   err->message);
+		g_error_free (err);
+		g_signal_emit(object, signals[FINISHED], 0, 1);
+
+		return object;
+	}
+
+	/* get system scope settings service */
+	priv->system_settings = nm_remote_settings_system_new (priv->bus);
+	g_signal_connect (priv->system_settings,
+			NM_SETTINGS_INTERFACE_CONNECTIONS_READ,
+			G_CALLBACK (connections_read_cb), object);
+
+	/* get user scope settings service if it's running */
+	priv->user_settings = nm_remote_settings_new (priv->bus,
+			NM_CONNECTION_SCOPE_USER);
+	g_object_get (priv->user_settings,
+			NM_REMOTE_SETTINGS_SERVICE_RUNNING, &is_user_service_running,
+			NULL);
+
+	if (is_user_service_running) {
+		g_signal_connect (priv->user_settings,
+				NM_SETTINGS_INTERFACE_CONNECTIONS_READ,
+				G_CALLBACK (connections_read_cb), object);
+	}
+	else  {
+		g_object_unref(priv->user_settings);
+		priv->user_settings = NULL;
+	}
+
+	/* Start parsing command line parameters if there is no
+	 * connections to wait for.
+	 */
+	if (!priv->system_settings && !priv->user_settings)
 		priv->parse_id = g_idle_add (parse_command_line, object);
 
 	return object;
@@ -269,6 +366,15 @@ dispose (GObject *object)
 
 	if (priv->args)
 		g_ptr_array_free (priv->args, TRUE);
+
+	if (priv->system_settings)
+			g_object_unref (priv->system_settings);
+
+	if (priv->user_settings)
+			g_object_unref (priv->user_settings);
+
+	if (priv->bus)
+		dbus_g_connection_unref(priv->bus);
 
 	G_OBJECT_CLASS (nm_config_parent_class)->dispose (object);
 }

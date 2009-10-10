@@ -19,6 +19,7 @@ set (NMCONFIG_SRC
 	main.c
 	NMConfig.c
 	NMConfigDevicePrintHelper.c
+	NMConfigConnectionPrintHelper.c
 )
 
 ADD_EXECUTABLE (nmconfig ${NMCONFIG_SRC})
